@@ -13,6 +13,7 @@ import {
   getEffectiveAptitudes
 } from './rules.js';
 import { openTraitModal, openAssimilationModal, openItemsModal } from './modals.js';
+import { getEquippedItemModifiers, renderInventoryItemsBlock } from './items.js';
 
 const STORAGE_KEY = 'nexus_assimilacao_v1';
 const CUSTOM_TRAITS_KEY = 'nexus_custom_traits_v1';
@@ -39,6 +40,7 @@ function createDefaultState() {
     assimilations: ['', '', '', ''],
     inventorySlots: Array(10).fill(false),
     inventoryText: '',
+    items: [],
     notes: ''
   };
 }
@@ -56,6 +58,13 @@ export const AssimilacaoModule = {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) this.state = { ...createDefaultState(), ...JSON.parse(saved) };
+
+      while (this.state.traits.length < 6) {
+        this.state.traits.push({ name: '', desc: '', effect: null });
+      }
+      if (!Array.isArray(this.state.items)) {
+        this.state.items = [];
+      }
 
       const savedTraits = localStorage.getItem(CUSTOM_TRAITS_KEY);
       if (savedTraits) this.customTraits = JSON.parse(savedTraits);
@@ -131,7 +140,7 @@ export const AssimilacaoModule = {
 
       <div class="sheet-tabs">
         <button type="button" class="tab-btn ${this.activePage === 'frente' ? 'active' : ''}" data-page="frente">1. Frente (Aptidões & Saúde)</button>
-        <button type="button" class="tab-btn ${this.activePage === 'verso' ? 'active' : ''}" data-page="verso">2. Verso (Características & Assimilações)</button>
+        <button type="button" class="tab-btn ${this.activePage === 'verso' ? 'active' : ''}" data-page="verso">2. Verso (Características, Assimilações & Itens)</button>
       </div>
       <div id="sheetPaperHost" class="sheet-paper"></div>
     `;
@@ -282,7 +291,7 @@ export const AssimilacaoModule = {
     });
     detCircle.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      char.determinationPoints = Math.min(10, char.determinationPoints + 1);
+      char.determinationPoints = Math.min(char.determinationLevel, char.determinationPoints + 1);
       this.saveState();
       this.refreshFrontUI();
     });
@@ -295,7 +304,8 @@ export const AssimilacaoModule = {
     });
     assCircle.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      char.assimilationPoints = Math.min(10, char.assimilationPoints + 1);
+      const maxAssim = 10 - char.determinationLevel;
+      char.assimilationPoints = Math.min(maxAssim, char.assimilationPoints + 1);
       this.saveState();
       this.refreshFrontUI();
     });
@@ -389,9 +399,9 @@ export const AssimilacaoModule = {
     const buildBox = (tierIndex, cssClass, footerNote = '') => {
       let dropsMarkup = '';
       for (let step = 1; step <= stats.hpPerLevel; step++) {
-        const damageThreshold = tierIndex * stats.hpPerLevel + step;
-        const isFilled = char.damageTaken >= damageThreshold ? 'filled' : '';
-        dropsMarkup += `<button type="button" class="hp-drop ${isFilled}" data-dmg="${damageThreshold}"></button>`;
+        const damageIfEmptied = tierIndex * stats.hpPerLevel + step;
+        const isFull = char.damageTaken < damageIfEmptied ? 'filled' : '';
+        dropsMarkup += `<button type="button" class="hp-drop ${isFull}" data-dmg="${damageIfEmptied}"></button>`;
       }
 
       const isCurrentTier = tierIndex === stats.currentLevelIndex ? 'current-tier' : '';
@@ -412,8 +422,10 @@ export const AssimilacaoModule = {
 
     document.querySelectorAll('.hp-drop').forEach(dropBtn => {
       dropBtn.addEventListener('click', () => {
-        const targetDamage = Number(dropBtn.dataset.dmg);
-        char.damageTaken = char.damageTaken === targetDamage ? targetDamage - 1 : targetDamage;
+        const damageIfEmptied = Number(dropBtn.dataset.dmg);
+        const isCurrentlyFull = char.damageTaken < damageIfEmptied;
+
+        char.damageTaken = isCurrentlyFull ? damageIfEmptied : damageIfEmptied - 1;
         this.saveState();
         this.refreshFrontUI();
       });
@@ -443,7 +455,13 @@ export const AssimilacaoModule = {
         </svg>
       `;
       node.addEventListener('click', () => {
-        char.determinationLevel = char.determinationLevel === step ? step - 1 : step;
+        const newDetLevel = char.determinationLevel === step ? step - 1 : step;
+        const newAssLevel = 10 - newDetLevel;
+
+        char.determinationLevel = newDetLevel;
+        char.determinationPoints = newDetLevel;
+        char.assimilationPoints = newAssLevel;
+
         this.saveState();
         this.refreshFrontUI();
         this.refreshApplicableTraits();
@@ -476,11 +494,14 @@ export const AssimilacaoModule = {
             <div class="trait-head-row">
               <input type="text" class="trait-name-box" data-tidx="${index}" value="${trait.name}" placeholder="Nome da Característica..." />
               <button type="button" class="btn btn-ghost btn-sm btn-pick-trait" data-tidx="${index}">+ Catálogo</button>
-              ${trait.name || trait.desc ? `<button type="button" class="btn btn-danger btn-sm btn-clear-trait" data-tidx="${index}">×</button>` : ''}
+              ${trait.name || trait.desc || index >= 6 ? `<button type="button" class="btn btn-danger btn-sm btn-clear-trait" data-tidx="${index}" title="${index >= 6 && !trait.name && !trait.desc ? 'Remover slot' : 'Limpar'}">×</button>` : ''}
             </div>
             <textarea class="trait-desc-lines auto-expand" data-tidx="${index}" placeholder="Descrição...">${trait.desc}</textarea>
           </div>
         `).join('')}
+      </div>
+      <div style="text-align:center; margin:8px 0 14px;">
+        <button type="button" id="btnAddTraitSlot" class="btn btn-ghost btn-sm">+ Adicionar Característica</button>
       </div>
       <div class="verso-bottom-grid">
         <div>
@@ -515,10 +536,11 @@ export const AssimilacaoModule = {
           <div class="inv-grid-boxes">
             ${char.inventorySlots.map((used, index) => `<button type="button" class="inv-box ${used ? 'used' : ''}" data-sidx="${index}">${used ? '✓' : ''}</button>`).join('')}
           </div>
-          <div style="text-align:right; margin-bottom:4px;">
+          <div style="text-align:right; margin-bottom:6px;">
             <button type="button" class="btn btn-ghost btn-sm" id="btnPickItems">+ Pacotes / Itens</button>
           </div>
-          <textarea id="inpInvText" class="inv-items-input auto-expand" placeholder="Equipamentos...">${char.inventoryText}</textarea>
+          <div id="equippedItemsHost"></div>
+          <textarea id="inpInvText" class="inv-items-input auto-expand" placeholder="Outros equipamentos e suprimentos...">${char.inventoryText}</textarea>
           <div style="text-align:center;"><div class="ribbon-title ribbon-ochre">ANOTAÇÕES</div></div>
           <textarea id="inpAnotacoes" class="notes-paper-box auto-expand" placeholder="Anotações...">${char.notes}</textarea>
         </div>
@@ -531,7 +553,8 @@ export const AssimilacaoModule = {
   bindBackInputs(host, activeAbilities = []) {
     const char = this.state;
 
-    // Expande automaticamente todas as caixas de texto conforme o conteúdo
+    renderInventoryItemsBlock(this, host);
+
     const autoResize = (el) => {
       el.style.height = 'auto';
       el.style.height = `${Math.max(el.scrollHeight, 68)}px`;
@@ -612,11 +635,22 @@ export const AssimilacaoModule = {
 
     host.querySelectorAll('.btn-clear-trait').forEach(button => {
       button.addEventListener('click', () => {
-        char.traits[Number(button.dataset.tidx)] = { name: '', desc: '', effect: null };
+        const index = Number(button.dataset.tidx);
+        if (index >= 6 && !char.traits[index].name && !char.traits[index].desc) {
+          char.traits.splice(index, 1);
+        } else {
+          char.traits[index] = { name: '', desc: '', effect: null };
+        }
         this.saveState();
         this.renderBackPage(host);
         this.refreshApplicableTraits();
       });
+    });
+
+    host.querySelector('#btnAddTraitSlot')?.addEventListener('click', () => {
+      char.traits.push({ name: '', desc: '', effect: null });
+      this.saveState();
+      this.renderBackPage(host);
     });
 
     host.querySelectorAll('.assim-slot textarea').forEach(textarea => {
@@ -660,7 +694,7 @@ export const AssimilacaoModule = {
     });
   },
 
-  // Filtra Características e Mutações aplicáveis ao teste atual
+  // Filtra Características, Itens Equipados e Mutações aplicáveis ao teste atual
   getApplicableTraits() {
     const primaryInstinct = SYSTEM_DATA.instincts[Number(document.getElementById('rollIns1')?.value || 0)];
     const isInstinctAction = document.getElementById('chkInstinto')?.checked;
@@ -706,7 +740,6 @@ export const AssimilacaoModule = {
       );
     };
 
-    // Infere efeito automático caso a característica ainda não tenha um objeto `effect` no catálogo
     const inferTraitEffect = (descText) => {
       const lower = String(descText || '').toLowerCase();
       if (!lower) return null;
@@ -792,6 +825,8 @@ export const AssimilacaoModule = {
       })
       .filter(Boolean);
 
+    const itemBonuses = getEquippedItemModifiers(this.state, matchesCondition);
+
     const skippedTypes = new Set(['aptitudeMod', 'aptitudeZero', 'healthMod', 'activeAction', 'freeInstinctAction', 'freeAssimilation', 'reroll']);
     const mutationBonuses = getEquippedMutations(this.state, this.catalogs.assimilacoes).flatMap(mut => {
       if (mut.locked) {
@@ -814,7 +849,7 @@ export const AssimilacaoModule = {
         }));
     });
 
-    return [...traitBonuses, ...mutationBonuses];
+    return [...traitBonuses, ...itemBonuses, ...mutationBonuses];
   },
 
   refreshApplicableTraits() {
@@ -829,8 +864,9 @@ export const AssimilacaoModule = {
 
     const pills = applicable.map(item => {
       const isMutation = item.source === 'assimilation';
-      const bg = item.locked ? '#e5e5e5' : isMutation ? '#dce8ec' : '#ede6d6';
-      const border = item.locked ? '#999' : isMutation ? 'var(--col-ass)' : 'var(--col-instinto)';
+      const isItem = item.source === 'item';
+      const bg = item.locked ? '#e5e5e5' : isMutation ? '#dce8ec' : isItem ? '#f3ead8' : '#ede6d6';
+      const border = item.locked ? '#999' : isMutation ? 'var(--col-ass)' : isItem ? '#8a6220' : 'var(--col-instinto)';
       const checkedAttr = item.optional || item.locked ? '' : 'checked';
       const disabledAttr = item.locked ? 'disabled' : '';
       return `
@@ -890,6 +926,8 @@ export const AssimilacaoModule = {
     const spentResources = { assimilation: 0, determination: 0, origin: '' };
     const dicePool = [];
     const dieReplacements = [];
+    const extraTypedDice = [];
+    let replaceBasePool = false;
     const modifiers = {
       A: 0, B: 0, C: 0, ignoreC: 0, bToA: 0, cToB: 0, extraDice: 0,
       perKeptDieA: 0, perKeptDieB: 0, discernimentoB: 0,
@@ -920,8 +958,19 @@ export const AssimilacaoModule = {
     spentResources.assimilation += extraApCost;
     spentResources.determination += extraDpCost;
 
-    // 2. Acumula efeitos dos modificadores selecionados
+    // 2. Acumula efeitos dos modificadores selecionados (características, itens e mutações)
     activeTraits.forEach(({ effect }) => {
+      if (effect.type === 'itemBundle' && effect.bundle) {
+        const b = effect.bundle;
+        modifiers.A += b.addA || 0;
+        modifiers.B += b.addB || 0;
+        modifiers.C += b.addC || 0;
+        modifiers.ignoreC += b.ignoreC || 0;
+        modifiers.bToA += b.bToA || 0;
+        modifiers.extraDice += b.extraDice || 0;
+        if (b.replacePool) replaceBasePool = true;
+        (b.dice || []).forEach(d => extraTypedDice.push(d));
+      }
       if (effect.type === 'addA') modifiers.A += effect.value;
       if (effect.type === 'addB') modifiers.B += effect.value;
       if (effect.type === 'addC') modifiers.C += effect.value;
@@ -942,7 +991,9 @@ export const AssimilacaoModule = {
     const assimilationLevel = 10 - char.determinationLevel;
     const primaryDiceCount = useAssimAsInstinct ? assimilationLevel : effectiveInstincts[primaryIdx];
 
-    if (isInstinctAction) {
+    if (replaceBasePool) {
+      testLabel = 'Teste de Item';
+    } else if (isInstinctAction) {
       const secondaryIdx = Number(document.getElementById('rollIns2').value);
       if (!hasFreeInstinct && !hasFreeAssimilation) {
         if (char.assimilationPoints >= 1) {
@@ -973,6 +1024,11 @@ export const AssimilacaoModule = {
       for (let count = 0; count < skillRank + modifiers.extraDice; count++) dicePool.push(10);
       testLabel = `${SYSTEM_DATA.instincts[primaryIdx]} + ${skillName}`;
     }
+
+    // Adiciona dados tipados explícitos vindos de itens (ex: 4d10 substitui; +2d6 soma)
+    extraTypedDice.forEach(({ sides, count }) => {
+      for (let i = 0; i < count; i++) dicePool.push(sides);
+    });
 
     if (useEffort) {
       if (char.determinationPoints < 1) {
@@ -1094,8 +1150,9 @@ export const AssimilacaoModule = {
     const char = this.state;
     const spent = this.pendingRoll.spentResources || { assimilation: 0, determination: 0, origin: '' };
 
-    char.assimilationPoints = Math.min(10, char.assimilationPoints + (spent.assimilation || 0));
-    char.determinationPoints = Math.min(10, char.determinationPoints + (spent.determination || 0));
+    const maxAssim = 10 - char.determinationLevel;
+    char.assimilationPoints = Math.min(maxAssim, char.assimilationPoints + (spent.assimilation || 0));
+    char.determinationPoints = Math.min(char.determinationLevel, char.determinationPoints + (spent.determination || 0));
 
     if (spent.origin === 'evento') char.eventUsed = false;
     if (spent.origin === 'ocupacao') char.occupationUsed = false;
@@ -1195,7 +1252,6 @@ export const AssimilacaoModule = {
     confirmBtn.disabled = selected.size === 0;
   },
 
-  // Troca as faces aleatoriamente enquanto o dado "rola" e depois revela o resultado real.
   animateRoll(roll) {
     const buttons = [...document.querySelectorAll('#diceTray .die-btn')];
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1211,7 +1267,7 @@ export const AssimilacaoModule = {
 
     setTimeout(() => {
       clearInterval(shuffle);
-      if (this.pendingRoll !== roll) return; // rolagem cancelada no meio da animação
+      if (this.pendingRoll !== roll) return;
       roll.rolling = false;
       roll.landed = !reduceMotion;
       this.renderPendingDice();

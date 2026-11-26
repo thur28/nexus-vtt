@@ -4,6 +4,8 @@ import {
   countSymbol,
   getSymbolIcon,
   formatSymbolsHTML,
+  renderDieFace,
+  dieSymbolsHTML,
   calculateDerivedStats,
   getHealthPenalty,
   calculateRollTotals,
@@ -1049,7 +1051,8 @@ export const AssimilacaoModule = {
       selected: new Set(bestIndices.slice(0, keepCount)),
       modifiers,
       spentResources,
-      rerolled: false
+      rerolled: false,
+      rolling: true
     };
 
     this.saveState();
@@ -1079,6 +1082,7 @@ export const AssimilacaoModule = {
       sides: die.sides,
       symbols: SYSTEM_DATA.dieFaces[die.sides][Math.floor(Math.random() * die.sides)]
     }));
+    this.pendingRoll.rolling = true;
 
     this.saveState();
     this.refreshFrontUI();
@@ -1139,16 +1143,23 @@ export const AssimilacaoModule = {
       return;
     }
 
+    const roll = this.pendingRoll;
+    const { dice, keepCount, selected, rolling, landed } = roll;
+
     rollBtn.disabled = true;
-    rerollBtn.style.display = !this.pendingRoll.rerolled && this.canRerollCurrentTest() ? 'inline-block' : 'none';
+    rerollBtn.style.display = !rolling && !roll.rerolled && this.canRerollCurrentTest() ? 'inline-block' : 'none';
     if (cancelBtn) cancelBtn.style.display = 'inline-block';
-    const { dice, keepCount, selected } = this.pendingRoll;
 
     dice.forEach((die, index) => {
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = `die-btn ${selected.has(index) ? 'kept' : ''}`;
-      button.innerHTML = `<span class="die-type">d${die.sides}</span>${formatSymbolsHTML(die.symbols, false)}`;
+      const isKept = !rolling && selected.has(index);
+      button.className = `die-btn die-d${die.sides}${rolling ? ' rolling' : ''}${landed ? ' landed' : ''}${isKept ? ' kept' : ''}`;
+      button.style.setProperty('--i', index);
+      button.title = rolling ? 'Rolando…' : (isKept ? 'Mantido — clique para descartar' : 'Clique para manter');
+      button.innerHTML = renderDieFace(die.sides, rolling ? '' : die.symbols);
+      tray.appendChild(button);
+      if (rolling) return;
 
       button.addEventListener('click', () => {
         if (selected.has(index)) {
@@ -1162,9 +1173,15 @@ export const AssimilacaoModule = {
         }
         this.renderPendingDice();
       });
-
-      tray.appendChild(button);
     });
+    roll.landed = false;
+
+    if (rolling) {
+      preview.innerHTML = '<em class="muted">Rolando os dados…</em>';
+      confirmBtn.disabled = true;
+      this.animateRoll(roll);
+      return;
+    }
 
     const totals = calculateRollTotals(this.pendingRoll);
     preview.innerHTML = `
@@ -1176,6 +1193,29 @@ export const AssimilacaoModule = {
       </span>
     `;
     confirmBtn.disabled = selected.size === 0;
+  },
+
+  // Troca as faces aleatoriamente enquanto o dado "rola" e depois revela o resultado real.
+  animateRoll(roll) {
+    const buttons = [...document.querySelectorAll('#diceTray .die-btn')];
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const duration = reduceMotion ? 0 : 650 + Math.min(buttons.length, 10) * 45;
+
+    const shuffle = setInterval(() => {
+      buttons.forEach((button, index) => {
+        const faces = SYSTEM_DATA.dieFaces[roll.dice[index].sides];
+        const symbolsEl = button.querySelector('.die-symbols');
+        if (symbolsEl) symbolsEl.outerHTML = dieSymbolsHTML(faces[Math.floor(Math.random() * faces.length)]);
+      });
+    }, 85);
+
+    setTimeout(() => {
+      clearInterval(shuffle);
+      if (this.pendingRoll !== roll) return; // rolagem cancelada no meio da animação
+      roll.rolling = false;
+      roll.landed = !reduceMotion;
+      this.renderPendingDice();
+    }, duration);
   },
 
   async confirmRoll() {

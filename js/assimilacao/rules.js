@@ -41,6 +41,28 @@ export function formatSymbolsHTML(symbolsText, isSmall = false) {
   return `<span class="sym-group">${icons}</span>`;
 }
 
+// Formato de cada dado (viewBox 100x100): corpo + linhas de faceta para dar volume.
+const DIE_SHAPES = {
+  6:  `<rect class="die-body" x="6" y="6" width="88" height="88" rx="16"/><rect class="die-facet" x="16" y="16" width="68" height="68" rx="10"/>`,
+  10: `<polygon class="die-body" points="50,3 96,42 50,97 4,42"/><polyline class="die-facet" points="4,42 50,62 96,42"/><line class="die-facet" x1="50" y1="62" x2="50" y2="97"/>`,
+  12: `<polygon class="die-body" points="50,4 96,37 78,94 22,94 4,37"/><polygon class="die-facet" points="50,20 80,42 69,80 31,80 20,42"/>`
+};
+
+// Símbolos dentro da face do dado; com 3+ símbolos usa ícones menores.
+export function dieSymbolsHTML(symbolsText) {
+  const many = symbolsText.length > 2;
+  const inner = symbolsText
+    ? symbolsText.split('').map(char => getSymbolIcon(char, many)).join('')
+    : '<span class="die-blank">—</span>';
+  return `<span class="die-symbols ${many ? 'many' : ''}">${inner}</span>`;
+}
+
+// Dado desenhado no formato do tipo (d6 quadrado, d10 losango, d12 pentágono).
+export function renderDieFace(sides, symbolsText) {
+  const shape = DIE_SHAPES[sides] || DIE_SHAPES[6];
+  return `<span class="die-wrap"><svg class="die-shape" viewBox="0 0 100 100" aria-hidden="true">${shape}</svg>${dieSymbolsHTML(symbolsText)}</span><span class="die-type">d${sides}</span>`;
+}
+
 // Localiza todas as mutações equipadas na ficha cruzando com o catálogo JSON e inferindo efeitos ativáveis
 export function getEquippedMutations(character, assimilationCatalog = {}) {
   const allMutations = Object.values(assimilationCatalog)
